@@ -13,24 +13,113 @@ SKILLS_LIST = [
     "ETL", "R"
 ]
 
+SKILL_ALIASES = {
+    "python": ["python"],
+    "java": ["java"],
+    "c++": ["c++", "cpp"],
+    "sql": ["sql"],
+    "machine learning": ["machine learning", "ml"],
+    "deep learning": ["deep learning"],
+    "tensorflow": ["tensorflow"],
+    "pytorch": ["pytorch"],
+    "aws": ["aws", "amazon web services"],
+    "docker": ["docker"],
+    "kubernetes": ["kubernetes", "k8s"],
+    "linux": ["linux"],
+    "git": ["git", "github"],
+    "power bi": ["power bi", "powerbi"],
+    "excel": ["excel", "ms excel", "microsoft excel"],
+    "hadoop": ["hadoop"],
+    "spark": ["spark", "apache spark"],
+    "hive": ["hive", "apache hive"],
+    "tableau": ["tableau"],
+    "nlp": ["nlp", "natural language processing"],
+    "flask": ["flask"],
+    "django": ["django"],
+    "mongodb": ["mongodb", "mongo db", "mongo"],
+    "mysql": ["mysql"],
+    "etl": ["etl", "extract transform load"],
+    "r": ["r programming", "r language"]
+}
+
+
+def normalize_skill_text(text):
+    """Normalize text for reliable skill matching."""
+    text = str(text).lower()
+    text = text.replace("-", " ")
+    text = text.replace("_", " ")
+    text = text.replace("powerbi", "power bi")
+    text = text.replace("microsoft excel", "excel")
+    text = text.replace("ms excel", "excel")
+    text = " ".join(text.split())
+    return text
+
+
+def skill_present(skill, text):
+    """Check whether a skill or one of its aliases exists in text."""
+    normalized_text = normalize_skill_text(text)
+
+    aliases = SKILL_ALIASES.get(
+        skill.lower(),
+        [skill.lower()]
+    )
+
+    for alias in aliases:
+        normalized_alias = normalize_skill_text(alias)
+
+        if skill.lower() == "r":
+            words = normalized_text.split()
+            if "r" in words or normalized_alias in words:
+                return True
+        elif normalized_alias in normalized_text:
+            return True
+
+    return False
+
+
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-def load_data():
-    base_path = os.path.join("data", "processed", "text")
 
-    resume_df = pd.read_csv(os.path.join(base_path, "unified_resumes.csv"))
-    jd_df = pd.read_csv(os.path.join(base_path, "unified_job_descriptions.csv"))
+def load_data():
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+
+    base_path = os.path.join(
+        project_root,
+        "data",
+        "processed",
+        "text"
+    )
+
+    resume_path = os.path.join(
+        base_path,
+        "unified_resumes.csv"
+    )
+
+    jd_path = os.path.join(
+        base_path,
+        "unified_job_descriptions.csv"
+    )
+
+    print("Loading resume data from:", resume_path)
+    print("Loading JD data from:", jd_path)
+
+    resume_df = pd.read_csv(resume_path)
+    jd_df = pd.read_csv(jd_path)
 
     return resume_df, jd_df
+resume_df, jd_df = load_data()
 
 def match_resume_to_jd(resume_index, jd_index):
+    resume_text = str(
+        resume_df.iloc[resume_index]["raw_text"]
+    )
+    jd_text = str(
+        jd_df.iloc[jd_index]["description"]
+    )
 
-    resume_df, jd_df = load_data()
-
-    resume_text = resume_df.iloc[resume_index]["raw_text"]
-    jd_text = jd_df.iloc[jd_index]["description"]
-
-    # Similarity score
+    # Semantic similarity
     resume_embedding = model.encode(resume_text)
     jd_embedding = model.encode(jd_text)
 
@@ -40,34 +129,64 @@ def match_resume_to_jd(resume_index, jd_index):
     )[0][0] * 100
 
     # Resume skills
-    resume_skills = ast.literal_eval(resume_df.iloc[resume_index]["skills"])
-    resume_lower = [s.lower() for s in resume_skills]
+    raw_resume_skills = resume_df.iloc[
+        resume_index
+    ]["skills"]
 
-    # Extract skills from JD
-    jd_skills = []
+    try:
+        resume_skills = ast.literal_eval(
+            str(raw_resume_skills)
+        )
+    except (ValueError, SyntaxError):
+        resume_skills = []
 
-    for skill in SKILLS_LIST:
-        if skill.lower() in jd_text.lower():
-            jd_skills.append(skill)
+    resume_skill_text = " ".join(
+        str(skill) for skill in resume_skills
+    )
 
-    matched = [s for s in jd_skills if s.lower() in resume_lower]
-    missing = [s for s in jd_skills if s.lower() not in resume_lower]
+    # Extract required skills from JD
+    jd_skills = [
+        skill for skill in SKILLS_LIST
+        if skill_present(skill, jd_text)
+    ]
+
+    # Match resume skills with JD requirements
+    matched = [
+        skill for skill in jd_skills
+        if skill_present(skill, resume_skill_text)
+    ]
+
+    missing = [
+        skill for skill in jd_skills
+        if not skill_present(skill, resume_skill_text)
+    ]
 
     return {
-        "Resume ID": resume_df.iloc[resume_index]["resume_id"],
-        "Job Title": jd_df.iloc[jd_index]["job_title"],
-        "Match Score": float(round(score, 2)),
-        "Matched Skills": matched,
-        "Missing Skills": missing
+        "resume_id": resume_df.iloc[resume_index]["resume_id"],
+        "job_title": jd_df.iloc[jd_index]["job_title"],
+        "match_score": round(float(score), 2),
+        "matched_skills": matched,
+        "missing_skills": missing
     }
 
-if __name__ == "__main__":
-    result = match_resume_to_jd(0, 0)
-    print(result)
 
 if __name__ == "__main__":
-    result = match_resume_to_jd(0, 0)
+    test_cases = [
+        (0, 0),
+        (1, 5),
+        (10, 20),
+        (50, 100),
+        (100, 200)
+    ]
 
-    print("Resume-JD Matching Result")
-    print("-------------------------")
-    print(result)
+    for resume_idx, jd_idx in test_cases:
+        print("=" * 60)
+        print(f"Resume {resume_idx} vs JD {jd_idx}")
+
+        result = match_resume_to_jd(
+            resume_idx,
+            jd_idx
+        )
+
+        for key, value in result.items():
+            print(f"{key}: {value}")
