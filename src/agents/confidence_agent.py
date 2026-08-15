@@ -14,7 +14,7 @@ Feature extraction below is copied EXACTLY from notebook 02's
 extract_audio_features() (TARGET_SR=16000, top_db=20 trim, n_mfcc=13,
 piptrack pitch, RMS energy, ZCR) so it matches how train.csv was built.
 """
-from src.agents.pace_pause_metrics import analyze_pace_and_pauses
+
 import librosa
 import numpy as np
 import pandas as pd
@@ -37,8 +37,14 @@ def _find_project_root(marker="data/processed/audio/train.csv", max_up=4):
 PROJECT_ROOT = _find_project_root()
 MODEL_DIR = PROJECT_ROOT / "models"
 
-CLASSIFIER_PATH = MODEL_DIR / "confidence_classifier.joblib"
-LABEL_ENCODER_PATH = MODEL_DIR / "confidence_label_encoder.joblib"
+# v2 = improved Binary XGBoost model (confident/nervous only, 79.1% test accuracy)
+# — replaces the original 3-class Random Forest (confident/nervous/neutral,
+#   72.2% test accuracy, overfit at 100% train). See notebook 07 for the
+#   full comparison. The 'neutral' class was dropped: it had the weakest
+#   signal (only 134 training examples, worst F1 in every version tested)
+#   and confident/nervous is the more actionable signal for interview feedback.
+CLASSIFIER_PATH = MODEL_DIR / "confidence_classifier_v2.joblib"
+LABEL_ENCODER_PATH = MODEL_DIR / "confidence_label_encoder_v2.joblib"
 SCALER_PATH = MODEL_DIR / "audio_feature_scaler.joblib"
 
 FEATURE_COLS = [f"mfcc_{i}" for i in range(13)] + [
@@ -170,8 +176,13 @@ def analyze_delivery(audio_file: str, transcript: str):
     Returns
     -------
     dict with:
-        confidence_label   : predicted class ('confident' / 'nervous' / 'neutral')
+        confidence_label   : predicted class ('confident' / 'nervous')
+                             NOTE: as of v2, this is a BINARY classifier —
+                             'neutral' was dropped (see model loading comment
+                             above). Any downstream code checking for a
+                             'neutral' key/value needs to be updated.
         confidence_scores  : dict of class -> predicted probability
+                             (now only 2 keys: 'confident', 'nervous')
         pace_pause_metrics : dict from analyze_pace_and_pauses()
     """
     # --- Confidence classification ---
