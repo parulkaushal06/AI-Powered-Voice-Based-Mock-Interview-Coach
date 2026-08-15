@@ -1,3 +1,23 @@
+"""
+Resume/JD Matcher
+------------------
+Owner: Person 4
+
+Matches a resume against a job description using semantic similarity
+(sentence embeddings) + explicit skill-gap detection (matched/missing
+skills), so the Next Question Agent can target weak areas.
+
+NOTE ON skill_gaps INTEGRATION (see next_question_agent.py):
+missing_skills here uses proper-case tech skill names (e.g. "Python",
+"AWS"), while unified_questions.csv's `category` column uses broader
+category labels (e.g. "Database and SQL", "Data Structures"). These
+vocabularies don't match exactly. next_question_agent.py's skill_gaps
+matching was updated to do case-insensitive substring matching (instead
+of exact equality) specifically to bridge this gap — e.g. "sql" will
+match a category like "Database and SQL". Exact 1:1 mapping isn't
+guaranteed for every skill; documented as a known limitation.
+"""
+
 import ast
 import os
 import pandas as pd
@@ -77,47 +97,62 @@ def skill_present(skill, text):
     return False
 
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# ---------------------------------------------------------------------------
+# Lazy-loaded singletons (model + data) — avoids reloading a 90MB embedding
+# model and two large CSVs every time this module is imported. Mirrors the
+# get_retriever() pattern in src/data_processing/retrieval.py.
+# ---------------------------------------------------------------------------
+_model = None
+_resume_df = None
+_jd_df = None
 
 
-def load_data():
-    project_root = os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))
-    )
+def _get_model():
+    global _model
+    if _model is None:
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
 
-    base_path = os.path.join(
-        project_root,
-        "data",
-        "processed",
-        "text"
-    )
 
-    resume_path = os.path.join(
-        base_path,
-        "unified_resumes.csv"
-    )
+def _get_data():
+    global _resume_df, _jd_df
+    if _resume_df is None or _jd_df is None:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        base_path = os.path.join(project_root, "data", "processed", "text")
 
-    jd_path = os.path.join(
-        base_path,
-        "unified_job_descriptions.csv"
-    )
+        resume_path = os.path.join(base_path, "unified_resumes.csv")
+        jd_path = os.path.join(base_path, "unified_job_descriptions.csv")
 
-    print("Loading resume data from:", resume_path)
-    print("Loading JD data from:", jd_path)
+        print("Loading resume data from:", resume_path)
+        print("Loading JD data from:", jd_path)
 
-    resume_df = pd.read_csv(resume_path)
-    jd_df = pd.read_csv(jd_path)
+        _resume_df = pd.read_csv(resume_path)
+        _jd_df = pd.read_csv(jd_path)
 
-    return resume_df, jd_df
-resume_df, jd_df = load_data()
+    return _resume_df, _jd_df
+
 
 def match_resume_to_jd(resume_index, jd_index):
-    resume_text = str(
-        resume_df.iloc[resume_index]["raw_text"]
-    )
-    jd_text = str(
-        jd_df.iloc[jd_index]["description"]
-    )
+    """
+    Match a resume (by row index in unified_resumes.csv) against a job
+    description (by row index in unified_job_descriptions.csv).
+
+    Returns:
+    {
+        "resume_id": ...,
+        "job_title": ...,
+        "match_score": float (0-100, cosine similarity as a percentage),
+        "matched_skills": [...],   # skills present in both resume and JD
+        "missing_skills": [...]    # skills the JD wants but resume lacks
+                                    # — this is the skill_gaps signal for
+                                    # next_question_agent.pick_next_question()
+    }
+    """
+    resume_df, jd_df = _get_data()
+    model = _get_model()
+
+    resume_text = str(resume_df.iloc[resume_index]["raw_text"])
+    jd_text = str(jd_df.iloc[jd_index]["description"])
 
     # Semantic similarity
     resume_embedding = model.encode(resume_text)
@@ -129,37 +164,21 @@ def match_resume_to_jd(resume_index, jd_index):
     )[0][0] * 100
 
     # Resume skills
-    raw_resume_skills = resume_df.iloc[
-        resume_index
-    ]["skills"]
+    raw_resume_skills = resume_df.iloc[resume_index]["skills"]
 
     try:
-        resume_skills = ast.literal_eval(
-            str(raw_resume_skills)
-        )
+        resume_skills = ast.literal_eval(str(raw_resume_skills))
     except (ValueError, SyntaxError):
         resume_skills = []
 
-    resume_skill_text = " ".join(
-        str(skill) for skill in resume_skills
-    )
+    resume_skill_text = " ".join(str(skill) for skill in resume_skills)
 
     # Extract required skills from JD
-    jd_skills = [
-        skill for skill in SKILLS_LIST
-        if skill_present(skill, jd_text)
-    ]
+    jd_skills = [skill for skill in SKILLS_LIST if skill_present(skill, jd_text)]
 
     # Match resume skills with JD requirements
-    matched = [
-        skill for skill in jd_skills
-        if skill_present(skill, resume_skill_text)
-    ]
-
-    missing = [
-        skill for skill in jd_skills
-        if not skill_present(skill, resume_skill_text)
-    ]
+    matched = [skill for skill in jd_skills if skill_present(skill, resume_skill_text)]
+    missing = [skill for skill in jd_skills if not skill_present(skill, resume_skill_text)]
 
     return {
         "resume_id": resume_df.iloc[resume_index]["resume_id"],
@@ -183,10 +202,7 @@ if __name__ == "__main__":
         print("=" * 60)
         print(f"Resume {resume_idx} vs JD {jd_idx}")
 
-        result = match_resume_to_jd(
-            resume_idx,
-            jd_idx
-        )
+        result = match_resume_to_jd(resume_idx, jd_idx)
 
         for key, value in result.items():
             print(f"{key}: {value}")

@@ -18,6 +18,11 @@ actual names differ (this is the only part of the file you'd need to touch):
     question_id, question_text, domain ("HR"/"Technical"),
     difficulty ("easy"/"medium"/"hard"), skill_tag, ideal_answer
 
+NOTE: unified_questions.csv does NOT have a question_id column by default —
+add one when loading it, e.g.:
+    questions_df = pd.read_csv("data/processed/text/unified_questions.csv")
+    questions_df["question_id"] = questions_df.index.astype(str)
+
 Assumed history item shape (one per question already asked), built from
 evaluate_answer()'s own return value:
     {
@@ -116,7 +121,17 @@ def pick_next_question(history: list, resume: dict, jd: dict,
     candidates = _filter(pool, **{DOMAIN_COL: target_domain, DIFFICULTY_COL: target_difficulty})
 
     if skill_gaps and SKILL_COL in candidates.columns:
-        gap_matches = candidates[candidates[SKILL_COL].isin(skill_gaps)]
+        # Substring match (not exact equality) since skill_gaps comes from
+        # resume_jd_matcher.py using tech skill names (e.g. "SQL", "AWS")
+        # while unified_questions.csv's category column uses broader labels
+        # (e.g. "Database and SQL"). Case-insensitive substring matching
+        # bridges the two vocabularies without needing a hand-maintained
+        # mapping table. Not a guaranteed 1:1 match for every skill —
+        # documented as a known limitation.
+        gap_lower = [str(g).lower() for g in skill_gaps]
+        cat_lower = candidates[SKILL_COL].astype(str).str.lower()
+        mask = cat_lower.apply(lambda cat: any(g in cat or cat in g for g in gap_lower))
+        gap_matches = candidates[mask]
         if not gap_matches.empty:
             candidates = gap_matches
 
@@ -130,10 +145,14 @@ def pick_next_question(history: list, resume: dict, jd: dict,
 
 if __name__ == "__main__":
     demo_df = pd.DataFrame([
-        {"question_id": "q1", "question_text": "Explain REST vs GraphQL", "domain": "Technical", "difficulty": "medium", "skill_tag": "api", "ideal_answer": "..."},
-        {"question_id": "q2", "question_text": "Tell me about a time you showed leadership", "domain": "HR", "difficulty": "easy", "skill_tag": "communication", "ideal_answer": "..."},
-        {"question_id": "q3", "question_text": "Why do you want this role?", "domain": "HR", "difficulty": "easy", "skill_tag": "motivation", "ideal_answer": "..."},
+        {"question_id": "q1", "question_text": "Explain REST vs GraphQL", "domain": "Technical", "difficulty": "medium", "category": "api", "ideal_answer": "..."},
+        {"question_id": "q2", "question_text": "Tell me about a time you showed leadership", "domain": "HR", "difficulty": "easy", "category": "communication", "ideal_answer": "..."},
+        {"question_id": "q3", "question_text": "Why do you want this role?", "domain": "HR", "difficulty": "easy", "category": "motivation", "ideal_answer": "..."},
+        {"question_id": "q4", "question_text": "Explain ACID properties in SQL", "domain": "Technical", "difficulty": "easy", "category": "Database and SQL", "ideal_answer": "..."},
     ])
     demo_history = [{"question_id": "q1", "domain": "Technical", "content_score": 8}]
-    nxt = pick_next_question(demo_history, resume={}, jd={}, questions_df=demo_df, skill_gaps=["communication"])
+
+    # Demo using a real resume_jd_matcher.py-style skill_gaps list
+    nxt = pick_next_question(demo_history, resume={}, jd={}, questions_df=demo_df, skill_gaps=["SQL", "AWS"])
+    print("Picked (with skill_gaps=['SQL', 'AWS']):")
     print(nxt)
