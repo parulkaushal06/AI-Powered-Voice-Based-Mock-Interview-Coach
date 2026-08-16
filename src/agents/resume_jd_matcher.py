@@ -132,10 +132,51 @@ def _get_data():
     return _resume_df, _jd_df
 
 
+def _match_core(resume_text: str, jd_text: str, resume_skills: list = None) -> dict:
+    """
+    Shared matching logic used by both match_resume_to_jd() (dataset rows)
+    and match_texts() (arbitrary user-provided text, e.g. a real uploaded
+    resume/JD in the frontend). Computes semantic similarity + skill
+    matched/missing lists.
+
+    Args:
+        resume_text: full resume text
+        jd_text: full job description text
+        resume_skills: optional pre-extracted skills list (from a `skills`
+            column). If not provided, skills are inferred directly from
+            resume_text using the same SKILLS_LIST/alias matching used for
+            the JD — this is what real user-uploaded resumes use, since
+            they won't have a pre-extracted `skills` column.
+    """
+    model = _get_model()
+
+    resume_embedding = model.encode(resume_text)
+    jd_embedding = model.encode(jd_text)
+
+    score = cosine_similarity([resume_embedding], [jd_embedding])[0][0] * 100
+
+    if resume_skills is not None:
+        resume_skill_text = " ".join(str(skill) for skill in resume_skills)
+    else:
+        resume_skill_text = resume_text
+
+    jd_skills = [skill for skill in SKILLS_LIST if skill_present(skill, jd_text)]
+    matched = [skill for skill in jd_skills if skill_present(skill, resume_skill_text)]
+    missing = [skill for skill in jd_skills if not skill_present(skill, resume_skill_text)]
+
+    return {
+        "match_score": round(float(score), 2),
+        "matched_skills": matched,
+        "missing_skills": missing,
+    }
+
+
 def match_resume_to_jd(resume_index, jd_index):
     """
     Match a resume (by row index in unified_resumes.csv) against a job
-    description (by row index in unified_job_descriptions.csv).
+    description (by row index in unified_job_descriptions.csv). Use this
+    for testing against the existing dataset. For a real user-uploaded
+    resume/JD, use match_texts() instead.
 
     Returns:
     {
@@ -149,44 +190,48 @@ def match_resume_to_jd(resume_index, jd_index):
     }
     """
     resume_df, jd_df = _get_data()
-    model = _get_model()
 
     resume_text = str(resume_df.iloc[resume_index]["raw_text"])
     jd_text = str(jd_df.iloc[jd_index]["description"])
 
-    # Semantic similarity
-    resume_embedding = model.encode(resume_text)
-    jd_embedding = model.encode(jd_text)
-
-    score = cosine_similarity(
-        [resume_embedding],
-        [jd_embedding]
-    )[0][0] * 100
-
-    # Resume skills
     raw_resume_skills = resume_df.iloc[resume_index]["skills"]
-
     try:
         resume_skills = ast.literal_eval(str(raw_resume_skills))
     except (ValueError, SyntaxError):
         resume_skills = []
 
-    resume_skill_text = " ".join(str(skill) for skill in resume_skills)
+    result = _match_core(resume_text, jd_text, resume_skills=resume_skills)
+    result["resume_id"] = resume_df.iloc[resume_index]["resume_id"]
+    result["job_title"] = jd_df.iloc[jd_index]["job_title"]
+    return result
 
-    # Extract required skills from JD
-    jd_skills = [skill for skill in SKILLS_LIST if skill_present(skill, jd_text)]
 
-    # Match resume skills with JD requirements
-    matched = [skill for skill in jd_skills if skill_present(skill, resume_skill_text)]
-    missing = [skill for skill in jd_skills if not skill_present(skill, resume_skill_text)]
+def match_texts(resume_text: str, jd_text: str, job_title: str = "Uploaded JD") -> dict:
+    """
+    Match arbitrary resume/JD TEXT directly — this is what the frontend
+    calls for a real user-uploaded resume and pasted/uploaded job
+    description, as opposed to match_resume_to_jd() which only works
+    against rows already in the dataset.
 
-    return {
-        "resume_id": resume_df.iloc[resume_index]["resume_id"],
-        "job_title": jd_df.iloc[jd_index]["job_title"],
-        "match_score": round(float(score), 2),
-        "matched_skills": matched,
-        "missing_skills": missing
+    Args:
+        resume_text: the candidate's full resume text (plain text)
+        jd_text: the target job description text (plain text)
+        job_title: optional display label for the JD (frontend can pass
+            whatever the user typed, e.g. "Data Analyst at Acme Corp")
+
+    Returns:
+    {
+        "resume_id": "uploaded",
+        "job_title": job_title,
+        "match_score": float,
+        "matched_skills": [...],
+        "missing_skills": [...]
     }
+    """
+    result = _match_core(resume_text, jd_text, resume_skills=None)
+    result["resume_id"] = "uploaded"
+    result["job_title"] = job_title
+    return result
 
 
 if __name__ == "__main__":
@@ -206,3 +251,19 @@ if __name__ == "__main__":
 
         for key, value in result.items():
             print(f"{key}: {value}")
+
+    print("\n" + "=" * 60)
+    print("Demo — match_texts() with arbitrary user-provided text")
+    demo_resume = (
+        "Experienced software engineer skilled in Python, SQL, and AWS. "
+        "Built and deployed several Flask APIs and worked with Docker for "
+        "containerization. Familiar with Git for version control."
+    )
+    demo_jd = (
+        "We are looking for a Data Analyst proficient in SQL, Python, "
+        "Power BI, and Excel. Experience with ETL pipelines and Tableau "
+        "is a plus."
+    )
+    result = match_texts(demo_resume, demo_jd, job_title="Data Analyst (Demo)")
+    for key, value in result.items():
+        print(f"{key}: {value}")

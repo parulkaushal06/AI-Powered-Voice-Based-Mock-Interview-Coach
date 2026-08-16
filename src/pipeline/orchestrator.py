@@ -49,7 +49,7 @@ from src.agents.evaluation_agent import evaluate_answer
 from src.agents.confidence_agent import analyze_delivery
 from src.agents.feedback_agent import generate_feedback, build_summary_report
 from src.agents.next_question_agent import pick_next_question
-from src.agents.resume_jd_matcher import match_resume_to_jd
+from src.agents.resume_jd_matcher import match_resume_to_jd, match_texts
 
 load_dotenv()
 
@@ -87,13 +87,19 @@ class InterviewSession:
     summary report.
     """
 
-    def __init__(self, resume_index: int = None, jd_index: int = None, domain_mix: dict = None):
+    def __init__(self, resume_index: int = None, jd_index: int = None,
+                 resume_text: str = None, jd_text: str = None,
+                 job_title: str = "Uploaded JD", domain_mix: dict = None):
         """
         Args:
-            resume_index: row index into unified_resumes.csv (optional).
-                If given together with jd_index, the session targets
-                questions toward the candidate's actual skill gaps.
-            jd_index: row index into unified_job_descriptions.csv (optional).
+            resume_index / jd_index: row indices into unified_resumes.csv /
+                unified_job_descriptions.csv — use for testing against the
+                existing dataset.
+            resume_text / jd_text: raw text of a REAL user-uploaded resume
+                and job description — use this for the actual frontend, so
+                users aren't limited to resumes/JDs already in the dataset.
+                Takes priority over resume_index/jd_index if both are given.
+            job_title: optional display label when using resume_text/jd_text.
             domain_mix: optional override for the HR/Technical question mix
                 (see next_question_agent.DEFAULT_DOMAIN_MIX).
         """
@@ -109,7 +115,12 @@ class InterviewSession:
 
         self.match_info = None
         self.skill_gaps = []
-        if resume_index is not None and jd_index is not None:
+        if resume_text is not None and jd_text is not None:
+            self.match_info = match_texts(resume_text, jd_text, job_title=job_title)
+            self.skill_gaps = self.match_info.get("missing_skills", [])
+            print(f"[orchestrator] Resume/JD match score: {self.match_info['match_score']}%")
+            print(f"[orchestrator] Targeting skill gaps: {self.skill_gaps}")
+        elif resume_index is not None and jd_index is not None:
             self.match_info = match_resume_to_jd(resume_index, jd_index)
             self.skill_gaps = self.match_info.get("missing_skills", [])
             print(f"[orchestrator] Resume/JD match score: {self.match_info['match_score']}%")
