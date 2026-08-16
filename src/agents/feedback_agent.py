@@ -24,43 +24,54 @@ OR, on parse failure:
         "raw_response": "<raw text>"
     }
 
-confidence_result (Person 3's shape — confirm with them, adjust
-_summarize_delivery() if field names differ):
+confidence_result — see CONFIDENCE_AGENT_INTERFACE.md for the real shape:
     {
-        "confidence_score": 0.68,   # 0-1
-        "pace_wpm": 142,
-        "pause_ratio": 0.18
+        "confidence_label": "confident",        # "confident" / "nervous"
+        "confidence_scores": {"confident": 0.92, "nervous": 0.08},
+        "pace_pause_metrics": {"wpm": 142, "pause_ratio": 0.18, ...}
     }
+_adapt_confidence_result() below converts this into the flatter shape
+_summarize_delivery() expects.
+
+NOTE: migrated from Gemini to Groq (see evaluation_agent.py for why —
+Gemini's free tier hit both 429 quota-exceeded and 503 server-overload
+errors repeatedly during dev). Uses the same GROQ_API_KEY as
+evaluation_agent.py.
 """
 
 from typing import Optional
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # ---------------------------------------------------------------------------
-# LLM call — uses the same `google.genai` package + GEMINI_API_KEY as
-# Person 1's evaluation_agent.py (the old `google.generativeai` package is
-# deprecated and its models are being retired, so we don't use it here).
-# Falls back to a plain template if no key is set / call fails, so the
-# pipeline never crashes during dev/demo.
+# LLM call — uses Groq (Llama 3.3 70B), same provider as Person 1's
+# evaluation_agent.py, for consistency and to share one free-tier quota
+# budget. Falls back to a plain template if no key is set / call fails, so
+# the pipeline never crashes during dev/demo.
 # ---------------------------------------------------------------------------
-GEMINI_MODEL_NAME = "gemini-flash-latest"  # same model Person 1 uses
+GROQ_MODEL_NAME = "llama-3.3-70b-versatile"  # same model Person 1 uses
 
 
 def call_llm(prompt: str, system: Optional[str] = None) -> str:
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return _fallback_template()
 
     try:
-        from google import genai
-        client = genai.Client(api_key=api_key)
-        full_prompt = f"{system}\n\n{prompt}" if system else prompt
-        response = client.models.generate_content(
-            model=GEMINI_MODEL_NAME,
-            contents=full_prompt,
+        from groq import Groq
+        client = Groq(api_key=api_key)
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        response = client.chat.completions.create(
+            model=GROQ_MODEL_NAME,
+            messages=messages,
         )
-        return response.text.strip()
+        return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"[feedback_agent] LLM call failed, using fallback: {e}")
         return _fallback_template()
@@ -68,8 +79,24 @@ def call_llm(prompt: str, system: Optional[str] = None) -> str:
 
 def _fallback_template() -> str:
     return ("Feedback generation is running in offline/template mode "
-            "(GEMINI_API_KEY not set or call failed). Set your key in .env "
+            "(GROQ_API_KEY not set or call failed). Set your key in .env "
             "to get real, tailored feedback text.")
+
+
+# ---------------------------------------------------------------------------
+# Adapter: converts analyze_delivery()'s real output shape (see
+# CONFIDENCE_AGENT_INTERFACE.md) into the flatter shape _summarize_delivery()
+# expects. Keeps the summarization logic simple without needing to change it
+# every time Person 3's output format changes.
+# ---------------------------------------------------------------------------
+def _adapt_confidence_result(raw: Optional[dict]) -> Optional[dict]:
+    if not raw:
+        return None
+    return {
+        "confidence_score": raw.get("confidence_scores", {}).get("confident"),
+        "pace_wpm": raw.get("pace_pause_metrics", {}).get("wpm"),
+        "pause_ratio": raw.get("pace_pause_metrics", {}).get("pause_ratio"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +155,8 @@ def generate_feedback(evaluation_result: dict, confidence_result: Optional[dict]
         "domain_ok": bool     # False if evaluation_result had an "error"
     }
     """
+    confidence_result = _adapt_confidence_result(confidence_result)
+
     # Graceful handling of the evaluation_agent error case (per interface doc)
     if evaluation_result.get("error"):
         return {
@@ -233,14 +262,20 @@ def build_summary_report(session_records: list) -> dict:
 
 
 if __name__ == "__main__":
-    # Smoke test using the stub shape from evaluation_agent_interface.md
+    # Smoke test using the stub shape from evaluation_agent_interface.md,
+    # and the REAL analyze_delivery() shape for confidence (see
+    # CONFIDENCE_AGENT_INTERFACE.md) to exercise _adapt_confidence_result().
     demo_eval = {
         "content_score": 7,
         "strengths": "Clear structure and relevant example provided.",
         "missing_points": "Could include more specific, measurable outcomes.",
         "structure_feedback": "Follows a logical flow, slightly rushed at the end.",
     }
-    demo_conf = {"confidence_score": 0.55, "pace_wpm": 175, "pause_ratio": 0.3}
+    demo_conf = {
+        "confidence_label": "nervous",
+        "confidence_scores": {"confident": 0.45, "nervous": 0.55},
+        "pace_pause_metrics": {"wpm": 175, "pause_ratio": 0.3},
+    }
     result = generate_feedback(demo_eval, demo_conf)
     print(result)
 
